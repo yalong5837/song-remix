@@ -9,7 +9,7 @@
 ## 准备
 
 1. Python 3.11+，ffmpeg（要带 libmp3lame，常见发行版自带）
-2. `pip install -r requirements.txt`
+2. `git clone https://github.com/yalong5837/song-remix.git && cd song-remix`，再 `pip install -r requirements.txt`
 3. 选一个接口，配好密钥（环境变量，或者把 `config.example.toml` 复制成 `config.toml` 再填）：
 
 | | `suno`（默认） | `minimax` |
@@ -102,15 +102,15 @@ out/20261028-153000-老歌-citypop/
 
 ## 交给智能体用（Grok Bot、Meta Muse、Claude Code 等）
 
-这个目录本身就是一个 [Agent Skills](https://agentskills.io) 格式的技能：根目录的 `SKILL.md` 写给 AI 看，包括什么时候用、要先问用户哪些事、标准流程、参数怎么选、出错怎么办、哪些事不能做。
+这个仓库本身就是一个 [Agent Skills](https://agentskills.io) 格式的技能：根目录的 `SKILL.md` 写给 AI 看，包括什么时候用、要先问用户哪些事、标准流程、参数怎么选、出错怎么办、哪些事不能做。技能目录名要保持 `song-remix`，和 `SKILL.md` 里的 `name` 一致。
 
 - **Grok Bot、Meta Muse**：它们都自带一台云端电脑（有终端和文件系统），可以直接在上面跑这个工具。
-  1. 打包：在仓库根目录运行 `git archive --format=zip -o song-remix.zip HEAD song-remix`。
-  2. 把 `song-remix.zip` 发给它（或者让它从 GitHub 拉取这个目录；私有仓库要先给它接上 GitHub），告诉它：“解压后读 SKILL.md，按说明把这首歌改成 citypop，配我的视频。”
+  1. 打包：在仓库里运行 `git archive --format=zip --prefix=song-remix/ -o song-remix.zip HEAD`。
+  2. 把 `song-remix.zip` 发给它（或者让它从 GitHub 克隆这个仓库；私有仓库要先给它接上 GitHub），告诉它：“解压后读 SKILL.md，按说明把这首歌改成 citypop，配我的视频。”
   3. 把 `SUNO_API_KEY` 或 `REPLICATE_API_TOKEN` 放进它的密钥存储，不要直接贴在对话里。
   4. 它跑通一次后，可以让它把用法存成自己的技能，下次直接用。
-- **Claude Code**：把目录放进技能目录，比如 `cp -r song-remix ~/.claude/skills/`。
-- **Codex、Gemini CLI 等支持 Agent Skills 的工具**：放进各自的技能目录。
+- **Claude Code**：克隆进技能目录，`git clone https://github.com/yalong5837/song-remix.git ~/.claude/skills/song-remix`。
+- **Codex、Gemini CLI 等支持 Agent Skills 的工具**：同样克隆或复制进各自的技能目录。
 
 Grok Bot 和 Muse 里“安装技能”的具体入口，我没找到官方说明，以上是通用做法。另一条路是做成远程 MCP 连接器（部署在你自己的服务器上），两家都支持，还没做。
 
@@ -140,7 +140,6 @@ Grok Bot 和 Muse 里“安装技能”的具体入口，我没找到官方说�
 ## 测试
 
 ```bash
-cd song-remix
 python3 -m unittest discover -s tests
 ```
 
