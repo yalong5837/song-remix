@@ -25,6 +25,7 @@
 
 ```bash
 export SUNO_API_KEY=你的key          # 或 export REPLICATE_API_TOKEN=你的token
+python3 remix.py check               # 检查 ffmpeg、依赖和密钥是否就绪
 ```
 
 ## 用法
@@ -70,11 +71,14 @@ python3 remix.py cover 老歌.mp3 --style "bossa nova, nylon guitar, soft percus
 python3 remix.py cover 老歌.mp3 --provider minimax --style rnb --start 1:05 --duration 30
 ```
 
-**6. 等太久超时了**：cover 会打印任务 ID（也记在 `meta.json` 里），稍后再取，不会重复扣费。
+**6. 提交完先去干别的，或者等太久超时了**：加 `--no-wait` 提交后马上返回；之后用输出目录取结果，结果放回原目录，视频和时长沿用提交时的设置。只是查询任务，不会重复扣费。
 
 ```bash
-python3 remix.py fetch <任务ID> --provider suno --video 视频.mp4
+python3 remix.py cover 老歌.mp3 --style citypop --start 1:05 --lyrics 副歌.txt --video 视频.mp4 --no-wait
+python3 remix.py fetch out/20261028-153000-老歌-citypop
 ```
+
+只有任务 ID 也行：`python3 remix.py fetch <任务ID> --provider suno --video 视频.mp4`。
 
 **7. 换个视频，或者重新剪**：拿已经下载好的结果重新处理，不调用接口。
 
@@ -93,8 +97,22 @@ out/20261028-153000-老歌-citypop/
   final_1.mp3   处理好的配乐，可以直接拖进剪映
   final_1.mp4   合成好的视频（给了 --video 才有）
   raw_2.mp3 …   第二个版本
-  meta.json     任务 ID、请求体、结果链接
+  meta.json     任务 ID、请求体、结果链接、成品文件清单（files）
 ```
+
+## 交给智能体用（Grok Bot、Meta Muse、Claude Code 等）
+
+这个目录本身就是一个 [Agent Skills](https://agentskills.io) 格式的技能：根目录的 `SKILL.md` 写给 AI 看，包括什么时候用、要先问用户哪些事、标准流程、参数怎么选、出错怎么办、哪些事不能做。
+
+- **Grok Bot、Meta Muse**：它们都自带一台云端电脑（有终端和文件系统），可以直接在上面跑这个工具。
+  1. 打包：在仓库根目录运行 `git archive --format=zip -o song-remix.zip HEAD song-remix`。
+  2. 把 `song-remix.zip` 发给它（或者让它从 GitHub 拉取这个目录；私有仓库要先给它接上 GitHub），告诉它：“解压后读 SKILL.md，按说明把这首歌改成 citypop，配我的视频。”
+  3. 把 `SUNO_API_KEY` 或 `REPLICATE_API_TOKEN` 放进它的密钥存储，不要直接贴在对话里。
+  4. 它跑通一次后，可以让它把用法存成自己的技能，下次直接用。
+- **Claude Code**：把目录放进技能目录，比如 `cp -r song-remix ~/.claude/skills/`。
+- **Codex、Gemini CLI 等支持 Agent Skills 的工具**：放进各自的技能目录。
+
+Grok Bot 和 Muse 里“安装技能”的具体入口，我没找到官方说明，以上是通用做法。另一条路是做成远程 MCP 连接器（部署在你自己的服务器上），两家都支持，还没做。
 
 ## 小技巧
 
@@ -129,7 +147,8 @@ python3 -m unittest discover -s tests
 ## 目录
 
 ```
-remix.py              命令行入口（cover / fetch / finish / styles）
+SKILL.md              给智能体看的使用说明（Agent Skills 格式）
+remix.py              命令行入口（cover / fetch / finish / styles / check）
 remixer/audio.py      ffmpeg：截取、裁剪淡出、响度标准化、合成视频
 remixer/providers.py  云端接口：Suno（sunoapi.org）、MiniMax（Replicate）
 presets.toml          风格预设

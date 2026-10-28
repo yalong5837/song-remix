@@ -1,5 +1,6 @@
 """ffmpeg 小工具：截取片段、处理成品（裁剪、淡入淡出、响度标准化）、把配乐合进视频。"""
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -52,6 +53,15 @@ def duration(path):
 
 def has_audio(path):
     return bool(_probe(path, '-select_streams', 'a', '-show_entries', 'stream=index').get('streams'))
+
+
+def check():
+    """返回 ffmpeg 相关的问题清单，空列表表示没问题。"""
+    missing = [t for t in ('ffmpeg', 'ffprobe') if not shutil.which(t)]
+    if missing:
+        return [f'没装 {"、".join(missing)}：Debian/Ubuntu 用 apt install ffmpeg，macOS 用 brew install ffmpeg']
+    r = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True)
+    return [] if 'libmp3lame' in r.stdout else ['ffmpeg 没带 mp3 编码器 libmp3lame，换一个完整版的 ffmpeg']
 
 
 def _codec(dst):

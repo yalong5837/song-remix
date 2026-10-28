@@ -158,10 +158,58 @@ class CliTest(unittest.TestCase):
         meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
         self.assertEqual(meta['task'], 'task-123')
         self.assertEqual(meta['tracks'], ['https://cdn/a.mp3', 'https://cdn/b.mp3?sig=1'])
+        self.assertEqual([Path(f).name for f in meta['files']],
+                         ['final_1.mp3', 'final_1.mp4', 'final_2.mp3', 'final_2.mp4'])
         self.assertEqual(meta['payload']['uploadUrl'], 'https://tmp/source.mp3')
         self.assertIn('task-123', stdout)
         submit = next(kw for m, url, kw in http.calls if url.endswith('upload-cover'))
         self.assertEqual(submit['json']['prompt'], '[chorus]\n你问我爱你有多深')
+
+    def test_no_wait_then_fetch_dir(self):
+        out, made = self.out_dir()
+        submit = FakeHTTP([
+            ('POST', 'file-stream-upload', ok({'downloadUrl': 'https://tmp/source.mp3'})),
+            ('POST', 'upload-cover', ok({'taskId': 'task-7'})),
+        ])
+        with mock.patch.dict(os.environ, {'SUNO_API_KEY': 'k'}):
+            code, stdout, err = run(['cover', str(self.song), '--style', 'lofi', '--instrumental',
+                                     '--video', str(self.video), '--no-wait', '--out', out], submit)
+            self.assertEqual(code, 0, err)
+            (run_dir,) = made()
+            self.assertIn(f'fetch {run_dir}', stdout)
+            self.assertFalse(any('record-info' in url for _, url, _ in submit.calls))
+
+            fetch = FakeHTTP([
+                ('GET', 'record-info', ok({'status': 'SUCCESS', 'response': {'sunoData': [
+                    {'audioUrl': 'https://cdn/a.mp3'}]}})),
+                ('GET', 'https://cdn/', FakeResponse(content=self.result_bytes)),
+            ])
+            code, _, err = run(['fetch', str(run_dir), '--interval', '0'], fetch)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(fetch.calls[0][2]['params'], {'taskId': 'task-7'})
+        # 结果放回原目录，并沿用提交时的视频
+        self.assertAlmostEqual(audio.duration(run_dir / 'final_1.mp3'), 5, delta=0.15)
+        self.assertAlmostEqual(audio.duration(run_dir / 'final_1.mp4'), 5, delta=0.15)
+        self.assertEqual(made(), [run_dir])
+
+    def test_fetch_dir_without_task(self):
+        out, made = self.out_dir()
+        run(['cover', str(self.song), '--duration', '5', '--dry-run', '--out', out])
+        (run_dir,) = made()
+        code, _, err = run(['fetch', str(run_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn('没有已提交的任务', err)
+
+    def test_check(self):
+        with mock.patch.object(remix, 'load_toml', return_value={}):
+            with mock.patch.dict(os.environ, {'SUNO_API_KEY': '', 'REPLICATE_API_TOKEN': ''}):
+                code, stdout, _ = run(['check'])
+            self.assertEqual(code, 1)
+            self.assertIn('都没配置', stdout)
+            with mock.patch.dict(os.environ, {'SUNO_API_KEY': 'k', 'REPLICATE_API_TOKEN': ''}):
+                code, stdout, _ = run(['check'])
+            self.assertEqual(code, 0, stdout)
+            self.assertIn('环境正常', stdout)
 
     def test_fetch_minimax(self):
         out, made = self.out_dir()

@@ -2,13 +2,14 @@
 """
 老歌改编（风格翻唱）：截一段老歌，交给云端模型换个风格重新演绎，再处理成能直接放进短视频的配乐。
 
+  python3 remix.py check                                     检查 ffmpeg、依赖和密钥
   python3 remix.py styles                                    看有哪些风格预设
   python3 remix.py cover 老歌.mp3 --style citypop --start 1:05 --duration 30 --lyrics 副歌.txt
   python3 remix.py cover 老歌.mp3 --style lofi --instrumental --start 0:48 --video 视频.mp4
-  python3 remix.py fetch <任务ID> --provider suno             等待超时后再去取结果
+  python3 remix.py fetch out/…                               取回 --no-wait 或等待超时的任务
   python3 remix.py finish out/…/raw_1.mp3 --video 视频.mp4     重新裁剪 / 合成，不再调用接口
 
-详细说明见 README.md。
+详细说明见 README.md；给智能体用的说明见 SKILL.md。
 """
 import argparse
 import json
@@ -105,23 +106,29 @@ def target_length(args):
 
 
 def make_final(src, final, args, length):
-    """一个音频 → 配乐成品，给了 --video 再合成成片。"""
+    """一个音频 → 配乐成品，给了 --video 再合成成片。返回生成的文件。"""
     sec = audio.finish(src, final, length, args.fade_in, args.fade_out, args.lufs)
     print(f'配乐：{final}（{audio.fmt_time(sec)}）')
-    if args.video:
-        vol = args.music_volume if args.music_volume is not None else (0.35 if args.keep_video_audio else 1.0)
-        mp4 = final.with_suffix('.mp4')
-        audio.mux(args.video, final, mp4, vol, args.keep_video_audio)
-        print(f'成片：{mp4}')
+    if not args.video:
+        return [final]
+    vol = args.music_volume if args.music_volume is not None else (0.35 if args.keep_video_audio else 1.0)
+    mp4 = final.with_suffix('.mp4')
+    audio.mux(args.video, final, mp4, vol, args.keep_video_audio)
+    print(f'成片：{mp4}')
+    return [final, mp4]
 
 
 def deliver(http, urls, out, args, length):
+    """下载每个版本并做成成品，文件清单记进 meta.json。"""
+    files = []
     for i, url in enumerate(urls, 1):
         ext = Path(url.split('?')[0]).suffix.lower()
         raw = out / f'raw_{i}{ext if ext in AUDIO_EXTS else ".mp3"}'
         download(http, url, raw)
         print(f'—— 版本 {i}')
-        make_final(raw, out / f'final_{i}.{args.format}', args, length)
+        files += make_final(raw, out / f'final_{i}.{args.format}', args, length)
+    save_meta(out, tracks=urls, files=[str(f) for f in files])
+    print(f'全部文件在 {out}')
 
 
 def cmd_cover(args, cfg, presets, http):
@@ -158,21 +165,35 @@ def cmd_cover(args, cfg, presets, http):
         url = provider.upload(clip_path)
     payload = provider.payload(url, job)
     task = provider.submit(payload)
-    save_meta(out, provider=provider.name, task=task, source=str(src), start=start, seconds=sec, payload=payload)
+    # fetch 拿输出目录续跑时，靠这里记下的接口、任务和成品设置
+    save_meta(out, provider=provider.name, task=task, source=str(src), start=start, seconds=sec,
+              target=target, video=args.video and str(Path(args.video).resolve()), payload=payload)
+    if args.no_wait:
+        print(f'已提交，任务 {task}。生成一般要 1~5 分钟，之后运行：python3 remix.py fetch {out}')
+        return
     print(f'已提交，任务 {task}，等待生成（一般 1~5 分钟）……')
     urls = wait(provider, task, interval=args.interval, timeout=args.timeout)
-    save_meta(out, tracks=urls)
     deliver(http, urls, out, args, target)
-    print(f'全部文件在 {out}')
 
 
 def cmd_fetch(args, cfg, http):
+    """取回结果。参数可以是 cover 的输出目录（结果放回原目录），也可以是任务 ID。"""
+    meta_path = Path(args.task) / 'meta.json'
+    if Path(args.task).is_dir() and not meta_path.is_file():
+        raise RemixError(f'{args.task} 里没有已提交的任务（dry-run 不会提交）')
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        out, task, args.provider = meta_path.parent, meta['task'], meta['provider']
+        args.video = args.video or meta.get('video')
+        length = target_length(args) or meta.get('target')
+    else:
+        out, task, length = None, args.task, target_length(args)
     provider = make_provider(args, cfg, http)
-    urls = wait(provider, args.task, interval=args.interval, timeout=args.timeout)
-    out = new_out_dir(args.out, f'fetch-{args.task[:8]}')
-    save_meta(out, provider=provider.name, task=args.task, tracks=urls)
-    deliver(http, urls, out, args, target_length(args))
-    print(f'全部文件在 {out}')
+    urls = wait(provider, task, interval=args.interval, timeout=args.timeout)
+    if out is None:
+        out = new_out_dir(args.out, f'fetch-{task[:8]}')
+        save_meta(out, provider=provider.name, task=task)
+    deliver(http, urls, out, args, length)
 
 
 def cmd_finish(args):
@@ -180,6 +201,25 @@ def cmd_finish(args):
     out = Path(args.out) if args.out else src.parent
     out.mkdir(parents=True, exist_ok=True)
     make_final(src, out / f'{src.stem}-final.{args.format}', args, target_length(args))
+
+
+def cmd_check(cfg):
+    """检查运行环境：智能体在一台新机器上第一次用之前先跑它。"""
+    problems = audio.check()
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        problems.append('缺少 requests：pip install -r requirements.txt')
+    keys = {'suno（SUNO_API_KEY）': os.environ.get('SUNO_API_KEY') or cfg.get('suno', {}).get('key'),
+            'minimax（REPLICATE_API_TOKEN）': os.environ.get('REPLICATE_API_TOKEN') or cfg.get('minimax', {}).get('token')}
+    for name, key in keys.items():
+        print(f"密钥 {name}：{'已配置' if key else '未配置'}")
+    if not any(keys.values()):
+        problems.append('两个接口的密钥都没配置，至少配一个才能正式生成（--dry-run 不需要）')
+    for p in problems:
+        print('✗ ' + p)
+    print('环境正常' if not problems else f'有 {len(problems)} 个问题要先解决')
+    return 1 if problems else 0
 
 
 def cmd_styles(presets):
@@ -226,9 +266,10 @@ def build_parser():
     c.add_argument('--audio-url', help='跳过上传，直接用这个公网链接（应指向截好的片段）')
     c.add_argument('--set', action='append', metavar='键=值', help='往请求体里加 / 改字段，可多次使用')
     c.add_argument('--dry-run', action='store_true', help='只截片段、打印请求体，不上传、不花钱')
+    c.add_argument('--no-wait', action='store_true', help='提交后马上返回，稍后用 fetch <输出目录> 取结果')
 
-    f = sub.add_parser('fetch', parents=[net, post], allow_abbrev=False, help='按任务 ID 取回结果（等待超时后用）')
-    f.add_argument('task', help='cover 命令打印的任务 ID（也记在 meta.json 里）')
+    f = sub.add_parser('fetch', parents=[net, post], allow_abbrev=False, help='取回结果（--no-wait 或等待超时后用）')
+    f.add_argument('task', help='cover 的输出目录（结果放回原目录，沿用当时的视频和时长），或者任务 ID')
     f.add_argument('--duration', help='成品时长（默认不裁；有 --video 按视频长度）')
 
     fin = sub.add_parser('finish', parents=[post], allow_abbrev=False, help='重新处理已下载的音频，不调用接口')
@@ -237,6 +278,7 @@ def build_parser():
     fin.add_argument('--out', help='输出目录（默认和音频放在一起）')
 
     sub.add_parser('styles', help='列出风格预设')
+    sub.add_parser('check', help='检查 ffmpeg、依赖和密钥是否就绪')
     return ap
 
 
@@ -247,6 +289,8 @@ def main(argv=None, http=None):
         cfg = load_toml(HERE / 'config.toml')
         if args.cmd == 'styles':
             cmd_styles(presets)
+        elif args.cmd == 'check':
+            return cmd_check(cfg)
         elif args.cmd == 'finish':
             cmd_finish(args)
         elif args.cmd == 'cover':
