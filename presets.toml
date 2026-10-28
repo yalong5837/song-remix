@@ -1,0 +1,70 @@
+# 风格预设：cover 命令里 --style 后面写名字就行，也可以不用预设、直接写一段英文风格描述。
+#
+#   desc      中文说明（只给人看）
+#   style     写给模型的风格描述，英文效果更稳
+#   keep      保留原曲的程度 0~1，只对 suno 生效：0.7 以上很像原曲，0.5~0.65 换了风格、旋律还认得出
+#   vocal     f 女声 / m 男声（可选）
+#   negative  不想要的元素，只对 suno 生效（可选）
+#
+# 想加自己的风格，照着下面的格式复制一段改名字即可。
+
+[lofi]
+desc = "Lo-fi 慵懒，适合日常 vlog、学习、咖啡馆"
+style = "lo-fi hip hop, chill, mellow Rhodes piano, vinyl crackle, soft boom bap drums, relaxed"
+keep = 0.6
+
+[citypop]
+desc = "80 年代城市流行，复古、霓虹、夜景"
+style = "80s city pop, funky slap bass, bright synth brass, groovy drums, nostalgic, retro"
+keep = 0.65
+
+[guofeng]
+desc = "国风古韵，汉服、古镇、山水"
+style = "Chinese traditional style, guzheng, erhu, bamboo flute, pipa, elegant, cinematic"
+keep = 0.6
+
+[edm]
+desc = "电音燃曲，卡点、运动、转场"
+style = "future bass EDM, energetic build-up, big drop, punchy kick, supersaw synths"
+keep = 0.55
+
+[phonk]
+desc = "漂移 Phonk，汽车、健身、高燃剪辑"
+style = "drift phonk, heavy 808 bass, cowbell melody, distorted, aggressive, dark"
+keep = 0.5
+
+[viral]
+desc = "短视频神曲，轻快洗脑"
+style = "catchy upbeat dance pop, bouncy beat, bright synth hook, playful, viral"
+keep = 0.6
+
+[rnb]
+desc = "丝滑 R&B，情感、夜晚、穿搭"
+style = "modern R&B, smooth vocals, neo soul chords, groovy bass, laid-back"
+keep = 0.6
+
+[rock]
+desc = "热血摇滚，青春、毕业、励志"
+style = "pop rock, driving electric guitars, powerful live drums, anthemic, energetic"
+keep = 0.6
+negative = "autotune"
+
+[acoustic]
+desc = "吉他弹唱，温暖、旅行、日常"
+style = "acoustic guitar, unplugged, intimate, warm, light percussion, folk pop"
+keep = 0.7
+
+[jazz]
+desc = "爵士小酒馆，慵懒、夜景、美食"
+style = "smooth jazz, saxophone, upright bass, brushed drums, swing, late night lounge"
+keep = 0.6
+
+[piano]
+desc = "钢琴治愈，温柔、回忆、亲情（适合配 --instrumental）"
+style = "solo piano, gentle, emotional, healing, soft reverb"
+keep = 0.65
+
+[cinematic]
+desc = "史诗大片，旅拍、航拍、宣传片"
+style = "epic orchestral, cinematic, big drums, strings, choir, trailer music"
+keep = 0.55

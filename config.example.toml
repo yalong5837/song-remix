@@ -1,0 +1,14 @@
+# 复制成 config.toml 再填（config.toml 已被 .gitignore 忽略，不会提交）。
+# 密钥也可以用环境变量：SUNO_API_KEY、REPLICATE_API_TOKEN，环境变量优先。
+
+[suno]
+key = ""                                      # sunoapi.org 后台的 API Key
+# model = "V5"                                # 模型版本，按服务商文档填（如 V4_5ALL、V5）
+# base = "https://api.sunoapi.org"            # 换成接口格式相同的服务商时改这里
+# upload_base = "https://sunoapiorg.redpandaai.co"   # 文件上传地址
+# callback = "https://example.com/callback"   # 必填但用不到（本工具靠轮询取结果）
+
+[minimax]
+token = ""                                    # Replicate 的 API Token
+# model = "minimax/music-cover"
+# upload_expire = "1h"                        # 片段在 litterbox 上保留多久：1h / 12h / 24h / 72h
