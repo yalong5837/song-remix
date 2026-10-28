@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-老歌改编（风格翻唱）：截一段老歌，交给云端模型换个风格重新演绎，再处理成能直接放进短视频的配乐。
+老歌改编（风格翻唱）：从曲谱或一段音频出发，交给云端模型换个风格重新演绎，再处理成能直接放进短视频的配乐。
 
   python3 remix.py check                                     检查 ffmpeg、依赖和密钥
   python3 remix.py styles                                    看有哪些风格预设
+  python3 remix.py melody 谱.txt --check                      检查扒好的简谱（小节拍数、歌词字数）
+  python3 remix.py melody 谱.txt                              曲谱 → 旋律小样，先听听对不对
+  python3 remix.py cover 谱.txt --style citypop --video 视频.mp4   曲谱直接翻唱（歌词取自谱子）
   python3 remix.py cover 老歌.mp3 --style citypop --start 1:05 --duration 30 --lyrics 副歌.txt
   python3 remix.py cover 老歌.mp3 --style lofi --instrumental --start 0:48 --video 视频.mp4
   python3 remix.py fetch out/…                               取回 --no-wait 或等待超时的任务
@@ -13,18 +16,20 @@
 """
 import argparse
 import json
+import math
 import os
 import sys
 import time
 import tomllib
 from pathlib import Path
 
-from remixer import audio
+from remixer import audio, score, synth
 from remixer.providers import Job, MiniMax, RemixError, Suno, download, wait
 
 HERE = Path(__file__).resolve().parent
 PLACEHOLDER = '<上传后的公网链接>'
 AUDIO_EXTS = ('.mp3', '.wav', '.m4a', '.flac')
+SCORE_KEEP = 0.75     # 从曲谱出发时默认的保留度：小样只有旋律，要贴紧它，不然模型会自己改旋律
 
 
 def load_toml(path):
@@ -69,16 +74,18 @@ def parse_sets(items):
     return extra
 
 
-def build_job(args, presets, stem):
+def build_job(args, presets, name, lyrics=None, keep=None):
+    """lyrics、keep 是命令行没指定时的默认值（从曲谱出发时：谱子里的歌词、更高的保留度）。"""
     preset = presets.get(args.style, {})
     style = preset.get('style', args.style)
     if args.more:
         style += ', ' + args.more
-    lyrics = Path(args.lyrics).read_text(encoding='utf-8').strip() if args.lyrics else None
-    keep = args.keep if args.keep is not None else preset.get('keep')
+    if args.lyrics:
+        lyrics = Path(args.lyrics).read_text(encoding='utf-8').strip()
+    keep = next((k for k in (args.keep, keep, preset.get('keep')) if k is not None), None)
     if keep is not None and not 0 <= keep <= 1:
         raise RemixError(f'--keep 要在 0~1 之间，现在是 {keep}')
-    return Job(style=style, title=args.title or f'{stem} ({args.style if preset else "remix"})',
+    return Job(style=style, title=args.title or f'{name} ({args.style if preset else "remix"})',
                lyrics=lyrics, instrumental=args.instrumental,
                negative=args.negative or preset.get('negative', ''),
                vocal=args.vocal or preset.get('vocal'),
@@ -131,11 +138,71 @@ def deliver(http, urls, out, args, length):
     print(f'全部文件在 {out}')
 
 
+def load_sheet(args, path):
+    """读曲谱并打印概况和需要核对的地方。"""
+    sheet = score.load(path, args.transpose, args.tempo, args.part)
+    sung = sum(n.pitch is not None for n in sheet.notes)
+    line = (f'《{sheet.title or path.stem}》{sheet.key} {sheet.time} ♩={sheet.tempo:g}，'
+            f'{sheet.bars} 小节，约 {audio.fmt_time(sheet.seconds)}，{sung} 个音')
+    if args.transpose:
+        line += f'（变调 {args.transpose:+d} 个半音）'
+    if sheet.chords:
+        line += f'，{len(sheet.chords)} 个和弦'
+    if sheet.has_lyrics:
+        line += f'，{sum(not s.startswith("[") for s in sheet.lyrics)} 行歌词'
+    print(line)
+    if sheet.info:
+        print(sheet.info)
+    for w in sheet.warnings:
+        print('⚠ ' + w)
+    return sheet
+
+
+def render_demo(args, sheet, out):
+    demo = out / 'demo.wav'
+    sec = synth.render(sheet, demo, chords=not args.no_chords, beat=not args.no_beat)
+    print(f'旋律小样：{demo}（{audio.fmt_time(sec)}）')
+    return demo
+
+
+def cmd_melody(args):
+    src = Path(args.score)
+    if not src.exists():
+        raise RemixError(f'找不到曲谱：{src}')
+    if not score.is_score(src):
+        raise RemixError(f'melody 只认曲谱：{" / ".join(score.SCORE_EXTS)}')
+    sheet = load_sheet(args, src)
+    if args.check:
+        print('没发现问题' if not sheet.warnings else f'有 {len(sheet.warnings)} 处要对照原谱核对')
+        return 1 if sheet.warnings else 0
+    out = new_out_dir(args.out, f'{src.stem}-melody')
+    render_demo(args, sheet, out)
+    if sheet.has_lyrics:
+        (out / 'lyrics.txt').write_text(sheet.lyrics_text + '\n', encoding='utf-8')
+        print(f'歌词：{out / "lyrics.txt"}')
+    return 0
+
+
 def cmd_cover(args, cfg, presets, http):
     src = Path(args.src)
     if not src.exists():
-        raise RemixError(f'找不到原曲：{src}')
-    job = build_job(args, presets, src.stem)
+        raise RemixError(f'找不到原曲或曲谱：{src}')
+    sheet = None
+    if score.is_score(src):
+        sheet = load_sheet(args, src)
+        video_len = args.video and audio.duration(args.video)
+        if video_len and not args.duration and sheet.seconds < video_len:
+            times = min(4, math.ceil(video_len / sheet.seconds))
+            sheet = sheet.repeat(times)
+            print(f'谱子比视频短，整段重复 {times} 遍（约 {audio.fmt_time(sheet.seconds)}）')
+        if sheet.has_lyrics and (args.start or args.duration):
+            print('提示：--start / --duration 只截音频，歌词不会跟着截；谱子里最好只写要用的那一段')
+    job = build_job(args, presets, sheet.title if sheet and sheet.title else src.stem,
+                    lyrics=sheet.lyrics_text if sheet and sheet.has_lyrics else None,
+                    keep=SCORE_KEEP if sheet else None)
+    if sheet and not job.lyrics and not job.instrumental:
+        where = '这个 MIDI 里没有歌词：' if sheet.key == 'MIDI' else '谱子里没有歌词：在旋律行下面加“词: …”，或者'
+        raise RemixError(f'{where}用 --lyrics 指定歌词文件，或者加 --instrumental 只要伴奏')
     provider = make_provider(args, cfg, http, need_key=not args.dry_run)
     preview = provider.payload(args.audio_url or PLACEHOLDER, job)   # 先检查参数，出错就不必截取上传
     for knob, given in (('keep', args.keep is not None), ('negative', bool(args.negative))):
@@ -148,7 +215,7 @@ def cmd_cover(args, cfg, presets, http):
     length = audio.parse_time(args.duration) or (target + 2 if target else None)
     out = new_out_dir(args.out, f'{src.stem}-{args.style if args.style in presets else "custom"}')
     clip_path = out / 'source.mp3'
-    sec = audio.clip(src, clip_path, start, length)
+    sec = audio.clip(render_demo(args, sheet, out) if sheet else src, clip_path, start, length)
     print(f'截取 {audio.fmt_time(start)}–{audio.fmt_time(start + sec)}（{sec:.1f} 秒）→ {clip_path}')
     if not provider.min_seconds <= sec <= provider.max_seconds:
         raise RemixError(f'{provider.name} 要求片段在 {provider.min_seconds}~{provider.max_seconds} 秒之间，'
@@ -251,15 +318,30 @@ def build_parser():
     g.add_argument('--timeout', type=float, default=900, help='最多等多少秒（默认 900）')
     g.add_argument('--out', default='out', help='输出目录（默认 ./out）')
 
-    c = sub.add_parser('cover', parents=[net, post], allow_abbrev=False, help='截一段老歌，换风格翻唱')
-    c.add_argument('src', help='原曲音频（mp3 / wav / m4a / flac 都行）')
+    sheet = argparse.ArgumentParser(add_help=False)
+    g = sheet.add_argument_group('曲谱（输入是 .txt 简谱或 .mid 时）')
+    g.add_argument('--transpose', type=int, default=0, help='升降几个半音（变调），比如 2、-3、-12（降八度）')
+    g.add_argument('--tempo', type=float, help='改速度（每分钟拍数），默认用谱子里写的')
+    g.add_argument('--part', type=int, help='MIDI 用第几个声部当旋律（默认自动挑；melody 会列出所有声部）')
+    g.add_argument('--no-chords', action='store_true', help='小样里不加和弦')
+    g.add_argument('--no-beat', action='store_true', help='小样里不加节拍')
+
+    m = sub.add_parser('melody', parents=[sheet], allow_abbrev=False, help='曲谱（简谱 / MIDI）→ 旋律小样')
+    m.add_argument('score', help='简谱文本（.txt，写法见 README）或 MIDI（.mid）')
+    m.add_argument('--check', action='store_true', help='只检查谱子（小节拍数、歌词字数），不生成音频')
+    m.add_argument('--out', default='out', help='输出目录（默认 ./out）')
+
+    c = sub.add_parser('cover', parents=[net, post, sheet], allow_abbrev=False, help='从曲谱或音频出发，换风格翻唱')
+    c.add_argument('src', help='曲谱（.txt 简谱 / .mid，会先生成旋律小样，歌词取自谱子），'
+                               '或原曲音频（mp3 / wav / m4a / flac）')
     c.add_argument('--style', default='citypop', help='风格预设名（见 styles 命令），或者直接写一段风格描述')
     c.add_argument('--more', help='追加在风格后面的描述，比如 "slower, female vocals"')
     c.add_argument('--start', help='从哪里开始截，比如 1:05（默认从头）')
     c.add_argument('--duration', help='截多长，也是成品时长，比如 30 或 0:30（默认：有 --video 按视频长度，否则整首）')
     c.add_argument('--lyrics', help='这段要唱的歌词（txt 文件）。suno 强烈建议提供；minimax 不给就沿用原歌词')
     c.add_argument('--instrumental', action='store_true', help='只要纯伴奏（只有 suno 支持）')
-    c.add_argument('--keep', type=float, help='保留原曲的程度 0~1，越大越像原曲（只对 suno 生效，默认看预设）')
+    c.add_argument('--keep', type=float, help=f'保留原曲的程度 0~1，越大越像原曲（只对 suno 生效；'
+                                              f'默认看预设，曲谱输入默认 {SCORE_KEEP}）')
     c.add_argument('--vocal', choices=['f', 'm'], help='女声 f / 男声 m')
     c.add_argument('--negative', help='不想要的元素，比如 "autotune, heavy distortion"（只对 suno 生效）')
     c.add_argument('--title', help='新歌名（默认“原名 (风格)”）')
@@ -291,6 +373,8 @@ def main(argv=None, http=None):
             cmd_styles(presets)
         elif args.cmd == 'check':
             return cmd_check(cfg)
+        elif args.cmd == 'melody':
+            return cmd_melody(args)
         elif args.cmd == 'finish':
             cmd_finish(args)
         elif args.cmd == 'cover':

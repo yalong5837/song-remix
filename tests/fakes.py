@@ -53,6 +53,48 @@ class FakeHTTP:
         return self._handle('POST', url, kw)
 
 
+def _vlq(n):
+    out = [n & 0x7F]
+    while n > 0x7F:
+        n >>= 7
+        out.insert(0, (n & 0x7F) | 0x80)
+    return bytes(out)
+
+
+def make_midi(path, parts, tempo_us=600000, division=480, numerator=4):
+    """写一个多音轨 MIDI。parts：[(音轨名, 通道, [(开始拍, 拍数, 音高)])]。
+    音符关闭用“力度 0 的音符开启”加 running status，顺便测解析器。"""
+    def track(events):
+        events.sort(key=lambda e: e[0])
+        body, last = b'', 0
+        for tick, data in events:
+            body += _vlq(tick - last) + data
+            last = tick
+        body += b'\x00\xff\x2f\x00'
+        return b'MTrk' + len(body).to_bytes(4, 'big') + body
+
+    conductor = track([(0, b'\xff\x51\x03' + tempo_us.to_bytes(3, 'big')),
+                       (0, bytes([0xFF, 0x58, 4, numerator, 2, 24, 8]))])
+    tracks = [conductor]
+    for name, channel, notes in parts:
+        raw = name.encode('utf-8')
+        events = [(0, b'\xff\x03' + _vlq(len(raw)) + raw)]
+        for start, beats, pitch in notes:
+            events.append((int(start * division), bytes([0x90 | channel, pitch, 90])))
+            events.append((int((start + beats) * division), bytes([0x90 | channel, pitch, 0])))
+        # 同一通道的连续事件省掉状态字节（running status）
+        events.sort(key=lambda e: e[0])
+        status = None
+        for i, (tick, data) in enumerate(events):
+            if data[0] & 0xF0 == 0x90:
+                events[i] = (tick, data[1:] if data[0] == status else data)
+                status = data[0]
+        tracks.append(track(events))
+    header = b'MThd' + (6).to_bytes(4, 'big') + (1).to_bytes(2, 'big') + len(tracks).to_bytes(2, 'big') \
+        + division.to_bytes(2, 'big')
+    Path(path).write_bytes(header + b''.join(tracks))
+
+
 def ffmpeg(*args):
     subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', *map(str, args)], check=True)
 
